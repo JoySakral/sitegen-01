@@ -1,17 +1,14 @@
-// sitegen-fast: the program the harness runs. It reads every case from
-// /input/cases.json (or MAKEFUN_INPUT_DIR), answers each one alone with run()
-// from solve.js, and writes /output/answers.json (or MAKEFUN_OUTPUT_DIR): a
-// JSON array of the answers, one per case and in the cases' order.
-//
-// The driver keeps V8's incremental marking off, the same tuning the house
-// baseline runs under, set before solve.js is imported so all of its work
-// runs under it. The build itself reads no clock, no environment and no
-// randomness, so two runs write byte-identical output.
+// site-generator-speed v2 driver: the harness runs `node /bot/main.ts` (node22).
+// It reads every case from /input/cases.json (a JSON array of {id, input}),
+// answers each one alone with run() from solve.js, and writes
+// /output/answers.json: a JSON array of the answers, one per case and in the
+// cases' order. Outside a container MAKEFUN_INPUT_DIR and MAKEFUN_OUTPUT_DIR
+// stand in for /input and /output.
 
 import { readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { setFlagsFromString } from 'node:v8';
 
+// V8's incremental marking off, set before solve.js is imported so all of its work runs under it.
 setFlagsFromString('--no-incremental-marking');
 
 /** solve.js, imported by its URL (a .js module carries no types) and typed by its contract. */
@@ -20,28 +17,22 @@ const { run } = (await import(new URL('./solve.js', import.meta.url).href)) as {
 const INPUT_DIR = process.env.MAKEFUN_INPUT_DIR ?? '/input';
 const OUTPUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
-/** The cases file read and checked: a JSON array of { id, input }. */
-function readCases(): { id: string; input: unknown }[] {
-  const raw = readFileSync(join(INPUT_DIR, 'cases.json'), 'utf8');
-  const parsed: unknown = JSON.parse(raw);
-  if (!Array.isArray(parsed)) throw new Error('cases.json is not a JSON array');
-  for (let i = 0; i < parsed.length; i++) {
-    const c = parsed[i] as { id?: unknown; input?: unknown };
-    if (c === null || typeof c !== 'object' || typeof c.id !== 'string' || !('input' in c)) {
-      throw new Error(`case ${i} has no id or input`);
-    }
-  }
-  return parsed as { id: string; input: unknown }[];
-}
+const cases = JSON.parse(readFileSync(INPUT_DIR + '/cases.json', 'utf8')) as { id: string; input: unknown }[];
 
-const cases = readCases();
-const answers: unknown[] = [];
-for (const c of cases) {
-  const answer = run(c.input);
-  if (answer === null || typeof answer !== 'object' || Array.isArray(answer)) {
-    throw new Error(`case ${c.id} did not answer with an output tree`);
+// answers.json is built value by value instead of one JSON.stringify of the
+// whole array: the same bytes, without ever holding the giant answers object
+// (and its walk) in memory.
+const parts: string[] = ['['];
+for (let k = 0; k < cases.length; k++) {
+  if (k) parts.push(',');
+  const ans = run(cases[k].input) as Record<string, string>;
+  const keys = Object.keys(ans);
+  parts.push('{');
+  for (let i = 0; i < keys.length; i++) {
+    if (i) parts.push(',');
+    parts.push(JSON.stringify(keys[i]), ':', JSON.stringify(ans[keys[i]]));
   }
-  answers.push(answer);
+  parts.push('}');
 }
-writeFileSync(join(OUTPUT_DIR, 'answers.json'), JSON.stringify(answers));
-console.error(`sitegen-fast: answered ${answers.length} case(s)`);
+parts.push(']');
+writeFileSync(OUTPUT_DIR + '/answers.json', parts.join(''));
